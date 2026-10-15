@@ -441,6 +441,12 @@ the container expires unused after 24 hours. It is the only draft-like state
 Instagram has, so it is what to use when a person should approve something
 before it goes live.
 
+Every tool that makes a post takes `is_ai_generated`. Set it to `true` when the
+post was made with AI, and Instagram shows its AI label. Meta's reference lists it
+as an optional self-disclosure that a carousel's items cannot carry, so on a
+carousel it goes on the carousel as a whole, and `create_container` refuses it on
+an item before anything is sent.
+
 Instagram has no native scheduling. Anything that claims to schedule a post is
 holding the job somewhere else and publishing it at the time.
 

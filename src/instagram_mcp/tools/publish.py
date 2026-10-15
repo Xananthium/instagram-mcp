@@ -10,6 +10,11 @@ you publish it. The container never appears in the app and is discarded unused
 after 24 hours, which makes it the closest thing Instagram has to a draft and
 the only way to stage something for review before it goes live.
 
+Every tool that makes a post takes is_ai_generated, Instagram's own label for a
+post made with AI. Meta's IG User Media reference lists it as an optional
+self-disclosure on the container, not available on the items inside a carousel,
+so a carousel carries it on the parent alone.
+
 There is no native scheduling. Anything that claims to schedule an Instagram
 post is holding the job somewhere else and publishing it at the time. This
 server does not pretend otherwise.
@@ -28,6 +33,14 @@ from ..runtime import Runtime, result
 from ..safety import audit, require_confirm, require_write, write_gate
 
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+AI_LABEL = (
+    " Pass is_ai_generated=true when the post was made with AI, and Instagram shows its AI label."
+)
+
+
+def _ai(flag: bool) -> str | None:
+    # Sent only when true. Leaving it out is what Instagram does for a post with no label.
+    return "true" if flag else None
 
 
 def register(server: MCPServer, runtime: Runtime) -> None:
@@ -60,7 +73,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         description=(
             "Stage media without posting it. Nothing appears in the app and the container "
             "expires unused after 24 hours. This is the only draft-like state Instagram has, "
-            "so use it when a human should see something before it goes live."
+            "so use it when a human should see something before it goes live." + AI_LABEL
         ),
         annotations=WRITE,
     )
@@ -72,6 +85,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         cover_url: str | None = None,
         location_id: str | None = None,
         is_carousel_item: bool = False,
+        is_ai_generated: bool = False,
         account: str | None = None,
     ) -> dict[str, Any]:
         require_write(settings, "create_container")
@@ -80,6 +94,11 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         if not image_url and not video_url:
             raise InstagramError(
                 "Pass image_url or video_url. Meta fetches the file from that URL."
+            )
+        if is_ai_generated and is_carousel_item:
+            raise InstagramError(
+                "Instagram takes is_ai_generated on a carousel as a whole, not on its items. "
+                "Leave it off the item and set it on the carousel."
             )
 
         target = pick(settings, account)
@@ -94,6 +113,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                 "cover_url": cover_url,
                 "location_id": location_id,
                 "is_carousel_item": "true" if is_carousel_item else None,
+                "is_ai_generated": _ai(is_ai_generated),
             },
         )
         audit(settings, "create_container", {"account": target.name, "container_id": container})
@@ -121,7 +141,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
     @write(
         description=(
             "Publish in one step: stage, wait for processing, publish. Use create_container "
-            "instead when a person should approve the post first."
+            "instead when a person should approve the post first." + AI_LABEL
         ),
         annotations=WRITE,
     )
@@ -130,6 +150,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         image_url: str | None = None,
         video_url: str | None = None,
         media_type: str = "IMAGE",
+        is_ai_generated: bool = False,
         account: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -150,14 +171,16 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                 "image_url": image_url,
                 "video_url": video_url,
                 "media_type": None if media_type == "IMAGE" else media_type,
+                "is_ai_generated": _ai(is_ai_generated),
             },
         )
         return result(target.tier, **await _publish(target, container))
 
-    @write(description="Publish a carousel of 2 to 10 images.", annotations=WRITE)
+    @write(description="Publish a carousel of 2 to 10 images." + AI_LABEL, annotations=WRITE)
     async def post_carousel(
         image_urls: list[str],
         caption: str | None = None,
+        is_ai_generated: bool = False,
         account: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -176,13 +199,20 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         ]
         parent = await _create(
             target,
-            {"media_type": "CAROUSEL", "caption": caption, "children": ",".join(children)},
+            {
+                "media_type": "CAROUSEL",
+                "caption": caption,
+                "children": ",".join(children),
+                "is_ai_generated": _ai(is_ai_generated),
+            },
         )
         detail = await _publish(target, parent)
         return result(target.tier, items=len(children), **detail)
 
     @write(
-        description="Publish a reel from a public video URL, with an optional cover frame.",
+        description=(
+            "Publish a reel from a public video URL, with an optional cover frame." + AI_LABEL
+        ),
         annotations=WRITE,
     )
     async def publish_reel(
@@ -190,6 +220,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         caption: str | None = None,
         cover_url: str | None = None,
         share_to_feed: bool = True,
+        is_ai_generated: bool = False,
         account: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -204,17 +235,19 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                 "caption": caption,
                 "cover_url": cover_url,
                 "share_to_feed": "true" if share_to_feed else "false",
+                "is_ai_generated": _ai(is_ai_generated),
             },
         )
         return result(target.tier, **await _publish(target, container))
 
     @write(
-        description="Publish an image or video story. It disappears after 24 hours.",
+        description="Publish an image or video story. It disappears after 24 hours." + AI_LABEL,
         annotations=WRITE,
     )
     async def publish_story(
         image_url: str | None = None,
         video_url: str | None = None,
+        is_ai_generated: bool = False,
         account: str | None = None,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -224,7 +257,13 @@ def register(server: MCPServer, runtime: Runtime) -> None:
             raise InstagramError("A story needs image_url or video_url.")
         target = pick(settings, account)
         container = await _create(
-            target, {"media_type": "STORIES", "image_url": image_url, "video_url": video_url}
+            target,
+            {
+                "media_type": "STORIES",
+                "image_url": image_url,
+                "video_url": video_url,
+                "is_ai_generated": _ai(is_ai_generated),
+            },
         )
         detail = await _publish(target, container)
         return result(target.tier, expires_in_hours=24, **detail)

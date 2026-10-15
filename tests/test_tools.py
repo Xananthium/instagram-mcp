@@ -6,6 +6,8 @@ someone installs this for.
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs
+
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -183,4 +185,65 @@ async def test_missing_library_is_reported_before_the_login_hint(make_server, mo
     server, runtime = make_server({}, unofficial=True)
     with pytest.raises(ToolError, match="instagrapi"):
         await server.call_tool("unofficial_profile", {"username": "x"})
+    await runtime.aclose()
+
+
+PUBLISHED = {
+    "/media_publish": {"id": "m9"},
+    "/media": {"id": "c1"},
+    "/c1": {"status_code": "FINISHED"},
+    "/m9": {"id": "m9", "permalink": "p", "media_type": "IMAGE"},
+}
+
+
+def container_fields(recorder) -> list[dict[str, list[str]]]:
+    """The form body of every container Instagram was asked to create, in order."""
+    return [
+        parse_qs(r.content.decode())
+        for r in recorder
+        if r.method == "POST" and r.url.path.endswith("/media")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("post", {"image_url": "u", "confirm": True}),
+        ("publish_reel", {"video_url": "v", "confirm": True}),
+        ("publish_story", {"image_url": "u", "confirm": True}),
+        ("create_container", {"image_url": "u"}),
+    ],
+)
+async def test_the_ai_label_reaches_instagram_only_when_asked(make_server, recorder, name, args):
+    server, runtime = make_server(PUBLISHED)
+    await server.call_tool(name, {**args, "is_ai_generated": True})
+    assert container_fields(recorder)[-1]["is_ai_generated"] == ["true"]
+    recorder.clear()
+    await server.call_tool(name, args)
+    assert "is_ai_generated" not in container_fields(recorder)[-1]
+    await runtime.aclose()
+
+
+async def test_a_carousel_carries_the_ai_label_on_the_parent_alone(make_server, recorder):
+    """Meta does not take the label on a carousel's items."""
+    server, runtime = make_server(PUBLISHED)
+    await server.call_tool(
+        "post_carousel", {"image_urls": ["a", "b"], "is_ai_generated": True, "confirm": True}
+    )
+    *children, parent = container_fields(recorder)
+    assert len(children) == 2
+    assert all("is_ai_generated" not in c for c in children)
+    assert parent["media_type"] == ["CAROUSEL"]
+    assert parent["is_ai_generated"] == ["true"]
+    await runtime.aclose()
+
+
+async def test_a_carousel_item_refuses_the_ai_label_before_any_network_call(make_server, recorder):
+    server, runtime = make_server(PUBLISHED)
+    with pytest.raises(ToolError, match="not on its items"):
+        await server.call_tool(
+            "create_container",
+            {"image_url": "u", "is_carousel_item": True, "is_ai_generated": True},
+        )
+    assert recorder == []
     await runtime.aclose()

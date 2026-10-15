@@ -6,6 +6,14 @@
 
 ---
 
+## Unreleased
+
+**The AI label.** `post`, `post_carousel`, `publish_reel`, `publish_story` and
+`create_container` take `is_ai_generated`, Instagram's self-disclosure that a post
+was made with AI (Meta's IG User Media reference). It is sent only when true. A
+carousel carries it on the parent, since Meta does not take it on the items, and
+`create_container` refuses it on a carousel item before any network call.
+
 ## 0.2.0
 
 Breaking, twice.
